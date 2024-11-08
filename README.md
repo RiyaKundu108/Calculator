@@ -1,3 +1,68 @@
+// Corrected Trigger to Sync Skills from Contact to Account
+trigger SetSkillsTrigger on Account (after insert, after update) {
+    // Map to hold Account Ids and their associated Skills
+    Map<Id, Set<String>> accountSkillsMap = new Map<Id, Set<String>>();
+
+    // Query all Contacts associated with the Accounts in the trigger context
+    for (Account acc : Trigger.new) {
+        accountSkillsMap.put(acc.Id, new Set<String>());
+    }
+
+    // Aggregate skills from Contacts related to the Accounts in the trigger context
+    for (Contact con : [SELECT Skills__c, AccountId FROM Contact WHERE AccountId IN :accountSkillsMap.keySet()]) {
+        if (con.Skills__c != null) {
+            List<String> skills = con.Skills__c.split(';');
+            accountSkillsMap.get(con.AccountId).addAll(skills);
+        }
+    }
+
+    // Update the Account's Skills__c field with concatenated skills from Contacts
+    List<Account> accountsToUpdate = new List<Account>();
+    for (Id accId : accountSkillsMap.keySet()) {
+        Account acc = new Account(Id = accId);
+        acc.Skills__c = String.join(new List<String>(accountSkillsMap.get(accId)), ';');
+        accountsToUpdate.add(acc);
+    }
+
+    // Update the Accounts with the new Skills__c values
+    if (!accountsToUpdate.isEmpty()) {
+        update accountsToUpdate;
+    }
+}
+@isTest
+public class SetSkillsTest {
+    @isTest
+    public static void testSetSkillsTrigger() {
+        // Create an Account
+        Account acc = new Account(Name = 'Test Account');
+        insert acc;
+
+        // Create Contacts associated with the Account
+        Contact con1 = new Contact(LastName = 'A1', AccountId = acc.Id, Skills__c = 'A;B');
+        Contact con2 = new Contact(LastName = 'A2', AccountId = acc.Id, Skills__c = 'B;C');
+        insert new List<Contact> { con1, con2 };
+
+        // Verify that the Account Skills__c field updated correctly
+        Account updatedAccount = [SELECT Skills__c FROM Account WHERE Id = :acc.Id];
+        System.assertEquals('A;B;C', updatedAccount.Skills__c, 'Account Skills__c should include A, B, and C from Contacts.');
+
+        // Update Contact skills to test update functionality
+        con1.Skills__c = 'A';
+        con2.Skills__c = 'C';
+        update new List<Contact> { con1, con2 };
+
+        // Verify Account's Skills__c after Contact updates
+        updatedAccount = [SELECT Skills__c FROM Account WHERE Id = :acc.Id];
+        System.assertEquals('A;C', updatedAccount.Skills__c, 'Account Skills__c should update to A;C based on updated Contacts.');
+
+        // Additional check after updating Account to ensure no additional updates
+        update acc;
+        updatedAccount = [SELECT Skills__c FROM Account WHERE Id = :acc.Id];
+        System.assertEquals('A;C', updatedAccount.Skills__c, 'Account Skills__c should remain A;C after Account update.');
+    }
+}
+
+
 <template>
     <!-- Account Selection Dropdown -->
     <lightning-combobox
