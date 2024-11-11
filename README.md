@@ -1,3 +1,155 @@
+global class OpportunityReminderTaskBatch implements Database.Batchable<SObject>, Database.Stateful, Schedulable {
+    
+    // Query to find open opportunities with open tasks/events in the last 5 days
+    global Database.QueryLocator start(Database.BatchableContext BC) {
+        Date lastFiveDays = System.today().addDays(-5);
+
+        String query = 'SELECT Id, Name, OwnerId, (SELECT Id FROM Tasks WHERE Status != \'Completed\' AND ActivityDate >= :lastFiveDays), ' + 
+                       '(SELECT Id FROM Events WHERE IsClosed = false AND ActivityDate >= :lastFiveDays) ' +
+                       'FROM Opportunity ' +
+                       'WHERE IsClosed = false';
+
+        return Database.getQueryLocator(query);
+    }
+
+    // Execute method to process each opportunity and create a reminder task if conditions are met
+    global void execute(Database.BatchableContext BC, List<Opportunity> scope) {
+        List<Task> tasksToInsert = new List<Task>();
+
+        for (Opportunity opp : scope) {
+            // Check if there are open tasks or events within the last 5 days
+            Boolean hasRecentOpenActivities = (!opp.Tasks.isEmpty() || !opp.Events.isEmpty());
+            
+            if (hasRecentOpenActivities) {
+                // Create only one reminder task per opportunity
+                Task reminderTask = new Task(
+                    Subject = 'Reminder: Follow-up on Opportunity - ' + opp.Name,
+                    WhoId = opp.OwnerId,   // Assuming Sales Rep is set as the Owner of the Opportunity
+                    WhatId = opp.Id,
+                    OwnerId = opp.OwnerId, // Assigning to the Sales Rep
+                    Status = 'Not Started',
+                    Priority = 'High',
+                    DueDate = System.today().addDays(1) // Set due date to tomorrow
+                );
+                
+                tasksToInsert.add(reminderTask);
+            }
+        }
+
+        // Insert all the tasks in a single DML statement
+        if (!tasksToInsert.isEmpty()) {
+            try {
+                insert tasksToInsert;
+            } catch (DmlException e) {
+                System.debug('Error inserting reminder tasks: ' + e.getMessage());
+            }
+        }
+    }
+
+    // Finish method for any post-processing if needed
+    global void finish(Database.BatchableContext BC) {
+        System.debug('OpportunityReminderTaskBatch completed.');
+    }
+
+    // Schedule method to run this batch nightly
+    global void execute(SchedulableContext SC) {
+        OpportunityReminderTaskBatch batchJob = new OpportunityReminderTaskBatch();
+        Database.executeBatch(batchJob, 200);
+    }
+}
+
+
+String cronExp = '0 0 0 * * ?'; // Runs every night at midnight
+OpportunityReminderTaskBatch batchJob = new OpportunityReminderTaskBatch();
+System.schedule('Nightly Opportunity Reminder Task Batch', cronExp, batchJob);
+
+
+global class NightlyOpportunityReminderBatch implements Database.Batchable<SObject>, Schedulable {
+
+    // Query all open opportunities with related open tasks/events in the last 5 days
+    global Database.QueryLocator start(Database.BatchableContext BC) {
+        Date fiveDaysAgo = Date.today().addDays(-5);
+        String query = 'SELECT Id, Sales_Rep__c FROM Opportunity ' +
+                       'WHERE StageName = \'Open\' AND ' +
+                       'Id IN (SELECT WhatId FROM Task WHERE Status != \'Completed\' AND ActivityDate >= :fiveDaysAgo) OR ' +
+                       'Id IN (SELECT WhatId FROM Event WHERE Status != \'Completed\' AND ActivityDate >= :fiveDaysAgo)';
+
+        return Database.getQueryLocator(query);
+    }
+
+    // Create a reminder task for each Opportunity, if it doesn’t already exist
+    global void execute(Database.BatchableContext BC, List<Opportunity> opportunities) {
+        List<Task> tasksToCreate = new List<Task>();
+        Set<Id> opportunityIds = new Set<Id>();
+
+        for (Opportunity opp : opportunities) {
+            opportunityIds.add(opp.Id);
+        }
+
+        // Check if a reminder task already exists for any of these opportunities
+        Map<Id, Task> existingReminderTasks = new Map<Id, Task>([
+            SELECT Id, WhatId 
+            FROM Task 
+            WHERE WhatId IN :opportunityIds AND Subject = 'Reminder: Follow-up on Opportunity'
+        ]);
+
+        for (Opportunity opp : opportunities) {
+            // Only create a reminder task if it doesn't already exist
+            if (!existingReminderTasks.containsKey(opp.Id) && opp.Sales_Rep__c != null) {
+                Task reminderTask = new Task(
+                    Subject = 'Reminder: Follow-up on Opportunity',
+                    Status = 'Not Started',
+                    Priority = 'High',
+                    WhatId = opp.Id,
+                    OwnerId = opp.Sales_Rep__c,
+                    ActivityDate = Date.today()
+                );
+                tasksToCreate.add(reminderTask);
+            }
+        }
+
+        if (!tasksToCreate.isEmpty()) {
+            insert tasksToCreate;
+        }
+    }
+
+    global void finish(Database.BatchableContext BC) {
+        // Optional: Add any cleanup or logging here
+    }
+
+    global void execute(SchedulableContext SC) {
+        Database.executeBatch(this, 200);
+    }
+}
+
+
+public class ScheduleNightlyOpportunityReminder {
+    public static void scheduleBatch() {
+        String cronExpression = '0 0 2 * * ?'; // Runs daily at 2 AM
+        System.schedule('Nightly Opportunity Reminder Batch', cronExpression, new NightlyOpportunityReminderBatch());
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 // Corrected Trigger to Sync Skills from Contact to Account
 trigger SetSkillsTrigger on Account (after insert, after update) {
     // Map to hold Account Ids and their associated Skills
